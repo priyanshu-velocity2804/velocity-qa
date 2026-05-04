@@ -1,0 +1,95 @@
+name: Velocity QA — Daily Call Analysis
+
+on:
+  schedule:
+    # 7:00 PM IST = 13:30 UTC (IST is UTC+5:30)
+    - cron: '30 13 * * *'
+
+  # Manual trigger — optionally specify a date and/or call type
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to analyze (YYYY-MM-DD). Leave empty for today (IST).'
+        required: false
+        default: ''
+      call_type:
+        description: 'Call type: oc | ndr | all'
+        required: false
+        default: 'all'
+      limit:
+        description: 'Max calls per type (default: 50)'
+        required: false
+        default: '50'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120   # 100 calls × ~60s each = plenty of headroom
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Resolve analysis date — manual input wins, otherwise today in IST
+      - name: Resolve analysis date
+        id: date
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            echo "value=${{ github.event.inputs.date }}" >> $GITHUB_OUTPUT
+          else
+            echo "value=$(TZ='Asia/Kolkata' date +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          fi
+
+      # ── Order Confirmation — 50 calls ──────────────────────────────────────
+      - name: Analyze Order Confirmation calls
+        if: ${{ github.event.inputs.call_type != 'ndr' }}
+        run: |
+          python analyze_calls.py \
+            --date ${{ steps.date.outputs.value }} \
+            --call-type oc \
+            --limit ${{ github.event.inputs.limit || '50' }}
+        env:
+          ANTHROPIC_API_KEY:          ${{ secrets.ANTHROPIC_API_KEY }}
+          METABASE_URL:               ${{ secrets.METABASE_URL }}
+          METABASE_API_KEY:           ${{ secrets.METABASE_API_KEY }}
+          METABASE_USERNAME:          ${{ secrets.METABASE_USERNAME }}
+          METABASE_PASSWORD:          ${{ secrets.METABASE_PASSWORD }}
+          GOOGLE_APPS_SCRIPT_URL:     ${{ secrets.GOOGLE_APPS_SCRIPT_URL }}
+          GOOGLE_APPS_SCRIPT_SECRET:  ${{ secrets.GOOGLE_APPS_SCRIPT_SECRET }}
+          SLACK_WEBHOOK_URL:          ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      # ── NDR — 50 calls ─────────────────────────────────────────────────────
+      - name: Analyze NDR calls
+        if: ${{ always() && github.event.inputs.call_type != 'oc' }}
+        run: |
+          python analyze_calls.py \
+            --date ${{ steps.date.outputs.value }} \
+            --call-type ndr \
+            --limit ${{ github.event.inputs.limit || '50' }}
+        env:
+          ANTHROPIC_API_KEY:          ${{ secrets.ANTHROPIC_API_KEY }}
+          METABASE_URL:               ${{ secrets.METABASE_URL }}
+          METABASE_API_KEY:           ${{ secrets.METABASE_API_KEY }}
+          METABASE_USERNAME:          ${{ secrets.METABASE_USERNAME }}
+          METABASE_PASSWORD:          ${{ secrets.METABASE_PASSWORD }}
+          GOOGLE_APPS_SCRIPT_URL:     ${{ secrets.GOOGLE_APPS_SCRIPT_URL }}
+          GOOGLE_APPS_SCRIPT_SECRET:  ${{ secrets.GOOGLE_APPS_SCRIPT_SECRET }}
+          SLACK_WEBHOOK_URL:          ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      # ── Upload JSON reports as artifacts (downloadable from Actions UI) ────
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: call-reports-${{ steps.date.outputs.value }}
+          path: call_report_*.json
+          retention-days: 30
