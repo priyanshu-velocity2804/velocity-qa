@@ -280,6 +280,9 @@ IMPORTANT:
 - Evaluate the PROCESS and DELIVERY of the call across the 8 dimensions below.
 - If the customer never meaningfully engaged (no answer, voicemail, immediate hang-up), set \
   no_contact = true and score all dimensions null.
+- The phrase "Hello? जी बताइये?" appears in transcripts as a silent system placeholder — \
+  it is NEVER actually voiced by the agent. Completely ignore it in your analysis. \
+  Do NOT flag it as an ambiguous opening or inbound-sounding greeting.
 
 Scoring guide per dimension (1–5):
   5 = Excellent, 4 = Good, 3 = Acceptable, 2 = Needs Work, 1 = Poor
@@ -287,8 +290,8 @@ Scoring guide per dimension (1–5):
 Dimensions to evaluate:
   1. opening_first_impression
      - Was the intro clear (name + brand + purpose)?
-     - Did it start with an ambiguous "Hello? जी बताइये?" making it sound inbound?
      - Did it pause awkwardly before launching into the script?
+     - Did the agent's actual first voiced words establish identity and context?
 
   2. pacing_pause_handling
      - How many times did it loop "Hello? are you there?" — was that appropriate?

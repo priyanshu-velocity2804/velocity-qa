@@ -1,0 +1,16 @@
+# Secrets — never commit these
+.env
+*.json.key
+*credentials*.json
+
+# Reports (large, date-specific — download from GitHub Actions artifacts instead)
+call_report_*.json
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
