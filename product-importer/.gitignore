@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+*.csv
+*.json
+!slack_manifest.json
+!tests/fixtures/*.json
