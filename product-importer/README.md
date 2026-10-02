@@ -35,7 +35,7 @@ cp .env.example .env   # then fill it in
 
 Shopify no longer allows new custom apps created in the store admin. Use the Dev Dashboard instead:
 
-1. Go to https://dev.shopify.com, create an app and set the Admin API scopes `write_products, read_products`.
+1. Go to https://dev.shopify.com, create an app and set the Admin API scopes `write_products, read_products, write_inventory, read_inventory, read_locations`.
 2. Install it on your store.
 3. Copy the **Client ID** and **Client secret** into `.env` as `SHOPIFY_CLIENT_ID` / `SHOPIFY_CLIENT_SECRET`, and set `SHOPIFY_STORE=your-store.myshopify.com`.
 
@@ -78,6 +78,8 @@ Keep it running with `tmux`, `launchd`, or any small VM, Railway or Render worke
 | Variable | Default | |
 |---|---|---|
 | `SHOPIFY_PRODUCT_STATUS` | `DRAFT` | `DRAFT` lets someone review before going live |
+| `INVENTORY_QUANTITY` | `100` | Starting stock for new products (tracked by Shopify, selling stops at 0). Re-imports don't reset it. CLI: `--inventory 50` |
+| `SHOPIFY_LOCATION_ID` | first active location | Which location holds that stock |
 | `PRICE_MARKUP_PERCENT` | `0` | Applied to both price and compare-at price |
 | `FLIPKART_COOKIE` | | Only needed if Flipkart starts returning 403/429. See the cookie notes in `importer/flipkart_fsn.py` |
 | `SHOPIFY_API_VERSION` | `2026-07` | |
@@ -86,7 +88,6 @@ Keep it running with `tmux`, `launchd`, or any small VM, Railway or Render worke
 
 - Each source product becomes **one Shopify variant**. Other sizes and colours of a listing are not imported as variants.
 - Prices are imported in the source currency without conversion. This assumes your store uses the same currency (INR for `.in` / Flipkart).
-- Inventory isn't tracked (`tracked: false`). Out-of-stock source products are created with the "deny" policy.
 - Each Amazon link uses 1 Rainforest credit.
 - Flipkart may block datacenter IPs. Running from a home or office network works best.
 

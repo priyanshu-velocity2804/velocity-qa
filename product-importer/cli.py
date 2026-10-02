@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -27,7 +28,12 @@ def main(argv=None) -> int:
     parser.add_argument("--csv", type=Path, help="Write Shopify import CSV to this path")
     parser.add_argument("--json", type=Path, help="Write normalised product data to this path")
     parser.add_argument("--status", choices=["draft", "active"], help="Shopify product status (default from .env)")
+    parser.add_argument("--inventory", type=int, help="Stock quantity for new products (default INVENTORY_QUANTITY or 100)")
     args = parser.parse_args(argv)
+    if args.inventory is not None:
+        if args.inventory <= 0:
+            parser.error("--inventory must be a positive number")
+        os.environ["INVENTORY_QUANTITY"] = str(args.inventory)
 
     try:
         run = run_import(" ".join(args.links), upload=not args.no_upload, status=args.status)

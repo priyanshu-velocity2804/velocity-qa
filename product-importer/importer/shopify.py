@@ -6,6 +6,7 @@ import csv
 import html
 import io
 import os
+import re
 import time
 from typing import List, Optional
 
@@ -32,8 +33,16 @@ mutation ImportProduct($input: ProductSetInput!, $identifier: ProductSetIdentifi
 }
 """
 
-HANDLE_LOOKUP = """
-query ($handle: String!) { productByIdentifier(identifier: {handle: $handle}) { id } }
+EXISTING_LOOKUP = """
+query ($sku: String!, $handle: String!) {
+  productVariants(first: 1, query: $sku) { nodes { product { id handle } } }
+  productByIdentifier(identifier: {handle: $handle}) { id }
+}
+"""
+
+
+LOCATIONS = """
+query { locations(first: 10, query: "active:true") { nodes { id name fulfillsOnlineOrders } } }
 """
 
 
@@ -44,9 +53,19 @@ class ShopifyError(Exception):
 # ---------------------------------------------------------------- formatting
 
 def handle_for(product: dict) -> str:
-    # Stable per source product, so re-importing a link updates instead of duplicating.
-    prefix = "amz" if product["source"] == "amazon" else "fk"
-    return f"{prefix}-{product['source_id']}".lower()
+    """Readable handle from the product name: "boAt Airdopes 219, 40H Battery, ..." -> "boat-airdopes-219".
+
+    Marketplace titles append specs after a comma, "w/", "with" or "(", so only the name before them is used.
+    """
+    name = re.split(r",|\(|\s(?:w/|with)\s", product["title"], maxsplit=1, flags=re.I)[0]
+    words = re.findall(r"[a-z0-9]+", name.lower().replace("+", " plus "))[:8]
+    return "-".join(words) or unique_handle_for(product)
+
+
+def unique_handle_for(product: dict) -> str:
+    # Used when the readable handle is taken by a different product (e.g. another colour of the same model).
+    words = re.findall(r"[a-z0-9]+", product["title"].lower())[:8]
+    return "-".join(words + [product["source_id"].lower()])
 
 
 def sku_for(product: dict) -> str:
@@ -59,6 +78,16 @@ def apply_markup(price: Optional[float]) -> Optional[float]:
         return None
     markup = float(os.getenv("PRICE_MARKUP_PERCENT", "0") or 0)
     return round(price * (1 + markup / 100), 2)
+
+
+def inventory_quantity() -> int:
+    try:
+        quantity = int(os.getenv("INVENTORY_QUANTITY", "100"))
+    except ValueError:
+        raise ShopifyError("INVENTORY_QUANTITY must be a whole number.")
+    if quantity <= 0:
+        raise ShopifyError("INVENTORY_QUANTITY must be a positive number.")
+    return quantity
 
 
 def money(value: Optional[float]) -> str:
@@ -118,7 +147,9 @@ def to_csv_rows(product: dict, status: Optional[str] = None) -> List[dict]:
         "Option1 Value": "Default Title",
         "Variant SKU": sku_for(product),
         "Variant Grams": int(product["weight_grams"]) if product["weight_grams"] else "",
-        "Variant Inventory Policy": "continue" if product["in_stock"] else "deny",
+        "Variant Inventory Tracker": "shopify",
+        "Variant Inventory Qty": inventory_quantity(),
+        "Variant Inventory Policy": "deny",  # stop selling at 0 stock
         "Variant Fulfillment Service": "manual",
         "Variant Price": money(apply_markup(product["price"])),
         "Variant Compare At Price": money(apply_markup(product["compare_at_price"])),
@@ -143,20 +174,27 @@ def to_csv(products: List[dict], status: Optional[str] = None) -> str:
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
+    used = set()
     for product in products:
-        writer.writerows(to_csv_rows(product, status))
+        rows = to_csv_rows(product, status)
+        # Shopify merges CSV rows sharing a handle into one product, so handles must be unique per file.
+        if rows[0]["Handle"] in used:
+            for row in rows:
+                row["Handle"] = unique_handle_for(product)
+        used.add(rows[0]["Handle"])
+        writer.writerows(rows)
     return buffer.getvalue()
 
 
 def to_product_set_input(product: dict, status: Optional[str] = None) -> dict:
-    inventory_item = {"tracked": False, "requiresShipping": True}
+    inventory_item = {"tracked": True, "requiresShipping": True}
     if product["weight_grams"]:
         inventory_item["measurement"] = {"weight": {"value": product["weight_grams"], "unit": "GRAMS"}}
     variant = {
         "optionValues": [{"optionName": "Title", "name": "Default Title"}],
         "price": money(apply_markup(product["price"])),
         "sku": sku_for(product),
-        "inventoryPolicy": "CONTINUE" if product["in_stock"] else "DENY",
+        "inventoryPolicy": "DENY",
         "inventoryItem": inventory_item,
     }
     if product["compare_at_price"]:
@@ -199,6 +237,9 @@ class ShopifyClient:
         if not self.static_token and not (self.client_id and self.client_secret):
             raise ShopifyError("Set SHOPIFY_ACCESS_TOKEN, or SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET.")
         self._token, self._token_expiry = "", 0.0
+        self._location_id = os.getenv("SHOPIFY_LOCATION_ID", "").strip()
+        if self._location_id.isdigit():
+            self._location_id = f"gid://shopify/Location/{self._location_id}"
 
     def token(self) -> str:
         if self.static_token:
@@ -239,17 +280,35 @@ class ShopifyClient:
             return payload["data"]
         raise ShopifyError("Shopify API kept throttling; try again shortly.")
 
+    def location_id(self) -> str:
+        """SHOPIFY_LOCATION_ID, else the store's first active location that fulfils online orders."""
+        if not self._location_id:
+            locations = self.graphql(LOCATIONS)["locations"]["nodes"]
+            preferred = [l for l in locations if l.get("fulfillsOnlineOrders")] or locations
+            if not preferred:
+                raise ShopifyError("No active Shopify location found to put inventory in.")
+            self._location_id = preferred[0]["id"]
+        return self._location_id
+
     def admin_url(self, product_gid: str) -> str:
         return f"https://{self.store}/admin/products/{product_gid.rsplit('/', 1)[-1]}"
 
     def upsert_product(self, product: dict, status: Optional[str] = None) -> dict:
-        """Create the product, or update it if this source product was imported before."""
+        """Create the product, or update it if this source product was imported before (matched by SKU)."""
         product_input = to_product_set_input(product, status)
-        handle = product_input["handle"]
-        existing = self.graphql(HANDLE_LOOKUP, {"handle": handle}).get("productByIdentifier")
+        found = self.graphql(EXISTING_LOOKUP, {"sku": f'sku:"{sku_for(product)}"', "handle": product_input["handle"]})
+        matches = found["productVariants"]["nodes"]
+        existing = matches[0]["product"] if matches else None
         variables = {"input": product_input}
         if existing:
-            variables["identifier"] = {"handle": handle}
+            variables["identifier"] = {"id": existing["id"]}
+            del product_input["handle"]  # keep the live product's URL stable
+        else:
+            if found.get("productByIdentifier"):
+                product_input["handle"] = unique_handle_for(product)
+            # Starting stock only on create; updates must not overwrite real stock levels after sales.
+            product_input["variants"][0]["inventoryQuantities"] = [
+                {"locationId": self.location_id(), "name": "available", "quantity": inventory_quantity()}]
         result = self.graphql(PRODUCT_SET, variables)["productSet"]
         if result["userErrors"]:
             raise ShopifyError("; ".join(f"{'.'.join(e.get('field') or [])} {e['message']}".strip()

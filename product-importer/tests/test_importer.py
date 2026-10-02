@@ -70,11 +70,39 @@ class ShopifyFormatTests(unittest.TestCase):
     def test_csv_has_one_row_per_image(self):
         rows = list(csv.DictReader(io.StringIO(shopify.to_csv([amazon_product()]))))
         self.assertEqual(len(rows), 4)
-        self.assertEqual(rows[0]["Handle"], "amz-b073jyc4xm")
+        self.assertEqual(rows[0]["Handle"], "sandisk-128gb-class-10-microsdxc-memory-card")
         self.assertEqual(rows[0]["Variant Price"], "2499.00")
         self.assertEqual(rows[0]["Status"], "draft")
+        self.assertEqual((rows[0]["Variant Inventory Tracker"], rows[0]["Variant Inventory Qty"]), ("shopify", "100"))
+        self.assertEqual(rows[0]["Variant Inventory Policy"], "deny")
         self.assertEqual(rows[3]["Image Position"], "4")
         self.assertEqual(rows[3]["Title"], "")
+
+    def test_handles_follow_the_product_name(self):
+        def handle(title):
+            return shopify.handle_for({"title": title, "source_id": "X"})
+        self.assertEqual(handle("boAt Airdopes 219, 40H Battery, Free Music"), "boat-airdopes-219")
+        self.assertEqual(handle("boAt Airdopes 311 Pro w/ 50 HRS Playback"), "boat-airdopes-311-pro")
+        self.assertEqual(handle("boAt Rockerz 110 with 40 HRS Playback"), "boat-rockerz-110")
+        self.assertEqual(handle("boAt Rockerz 255 Pro+, 60H Battery"), "boat-rockerz-255-pro-plus")
+        self.assertEqual(handle("boAt Rockerz 255 ANC(32dB) w/ 100 HRS"), "boat-rockerz-255-anc")
+
+    def test_inventory_quantity_must_be_positive(self):
+        import os
+        for bad in ("0", "-5", "lots"):
+            os.environ["INVENTORY_QUANTITY"] = bad
+            try:
+                with self.assertRaises(shopify.ShopifyError):
+                    shopify.inventory_quantity()
+            finally:
+                del os.environ["INVENTORY_QUANTITY"]
+
+    def test_csv_handles_are_unique(self):
+        second = dict(amazon_product(), source_id="B000000002")
+        rows = list(csv.DictReader(io.StringIO(shopify.to_csv([amazon_product(), second]))))
+        handles = [r["Handle"] for r in rows if r["Title"]]
+        self.assertNotEqual(handles[0], handles[1])
+        self.assertTrue(handles[1].endswith("-b000000002"))
 
     def test_product_set_input_and_markup(self):
         import os
@@ -86,6 +114,7 @@ class ShopifyFormatTests(unittest.TestCase):
         variant = data["variants"][0]
         self.assertEqual((variant["price"], variant["compareAtPrice"]), ("2748.90", "3850.00"))
         self.assertEqual(data["status"], "ACTIVE")
+        self.assertTrue(variant["inventoryItem"]["tracked"])
         self.assertEqual(len(data["files"]), 4)
         self.assertIn("<table>", data["descriptionHtml"])
 
